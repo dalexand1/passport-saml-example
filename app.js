@@ -1,4 +1,4 @@
-var http = require('http');
+var https = require('https');
 var fs = require('fs');
 var express = require("express");
 var dotenv = require('dotenv');
@@ -33,10 +33,29 @@ var samlStrategy = new saml.Strategy({
   // Identity Provider's public key
   cert: fs.readFileSync(__dirname + '/cert/idp_cert.pem', 'utf8'),
   validateInResponseTo: false,
-  disableRequestedAuthnContext: true
-}, function(profile, done) {
-  return done(null, profile); 
+  disableRequestedAuthnContext: true,
+  logoutUrl: process.env.IDP_LOGOUT_URL,
+  logoutCallback: process.env.SP_LOGOUT_CALLBACK
+},
+function(profile, done) {
+ console.log("Auth with", profile);
+ return done(null,
+        {
+          id: profile.id,
+          email: profile.email,
+          sessionIndex: profile.sessionIndex,
+          saml: {
+            nameID: profile.nameID,
+            nameIDFormat: profile.nameIDFormat,
+            token:profile.getAssertionXml()
+          }
+        });
 });
+
+var options = {
+  key: fs.readFileSync(__dirname + '/cert/key.pem', 'utf8'),
+  cert: fs.readFileSync(__dirname + '/cert/cert.pem', 'utf8')
+};
 
 passport.use(samlStrategy);
 
@@ -56,7 +75,7 @@ function ensureAuthenticated(req, res, next) {
 }
 
 app.get('/',
-  ensureAuthenticated, 
+  ensureAuthenticated,
   function(req, res) {
     res.send('Authenticated');
   }
@@ -76,13 +95,30 @@ app.post('/login/callback',
   }
 );
 
-app.get('/login/fail', 
+app.get('/login/fail',
   function(req, res) {
     res.status(401).send('Login failed');
   }
 );
 
-app.get('/Shibboleth.sso/Metadata', 
+app.post('/logout/callback', function(req, res){
+  console.log("logout post from:" + req.ip);
+  req.logout();
+  res.redirect('/');
+});
+
+app.get('/logout', function (req, res) {
+    req.user.nameID = req.user.saml.nameID;
+    req.user.nameIDFormat = req.user.saml.nameIDFormat;
+
+    samlStrategy.logout(req, function (err, request) {
+      if (!err) {
+        res.redirect(request);
+      }
+    });
+  });
+
+app.get('/Shibboleth.sso/Metadata',
   function(req, res) {
     res.type('application/xml');
     res.status(200).send(samlStrategy.generateServiceProviderMetadata(fs.readFileSync(__dirname + '/cert/cert.pem', 'utf8')));
@@ -95,7 +131,4 @@ app.use(function(err, req, res, next) {
   next(err);
 });
 
-var server = app.listen(4006, function () {
-  console.log('Listening on port %d', server.address().port)
-});
-
+https.createServer(options, app).listen(7000);
